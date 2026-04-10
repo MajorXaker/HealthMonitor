@@ -1,5 +1,5 @@
 # ── Stage 1: builder ────────────────────────────────────────────────────────
-FROM rust:1.85-slim AS builder
+FROM rust:1.94-slim AS builder
 
 # Install system deps required by native-tls and sqlx
 RUN apt-get update && apt-get install -y \
