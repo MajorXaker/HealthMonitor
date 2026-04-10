@@ -15,7 +15,7 @@ on:
       - master
 
 env:
-  IMAGE_NAME: MajorXaker/healthmon
+  IMAGE_NAME: ghcr.io/majorxaker/healthmon
 
 jobs:
   build-and-push:
