@@ -1,28 +1,25 @@
 # ── Stage 1: builder ────────────────────────────────────────────────────────
 FROM rust:1.94-slim AS builder
 
-# Install system deps required by native-tls and sqlx
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
 
-# Create a dummy main so cargo can fetch and compile dependencies
 RUN mkdir src && echo 'fn main() {}' > src/main.rs
-RUN cargo build --release 2>/dev/null || true
-RUN rm -rf src
+RUN cargo build --release || true
 
-# Copy real sources and migrations
+RUN rm -rf src \
+    target/release/healthmon \
+    target/release/deps/healthmon*
+
 COPY src ./src
 COPY migrations ./migrations
 
-# Build the real binary (dependencies are cached from above)
-# SQLX_OFFLINE=true skips compile-time DB checks (no DB available at build time)
 ENV SQLX_OFFLINE=true
 RUN cargo build --release
 
