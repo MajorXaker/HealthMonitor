@@ -15,10 +15,6 @@ on:
       - master
 
 env:
-  # Change to your Docker Hub username or ghcr.io namespace.
-  # Examples:
-  #   Docker Hub : youruser/healthmon
-  #   GHCR       : ghcr.io/youruser/healthmon
   IMAGE_NAME: MajorXaker/healthmon
 
 jobs:
