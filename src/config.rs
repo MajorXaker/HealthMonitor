@@ -13,7 +13,7 @@ pub struct AppConfig {
     /// HTTP Basic Auth credentials used to protect all REST endpoints.
     pub auth: AuthConfig,
     /// PostgreSQL connection URL, e.g. `postgres://user:pass@localhost:5432/db`.
-    pub database_url: String,
+    pub database_config: DatabaseConfig,
     /// TCP server binding configuration.
     pub server: ServerConfig,
     /// List of healthcheck definitions to run in background loops.
@@ -22,6 +22,34 @@ pub struct AppConfig {
     pub emails: Vec<EmailConfig>,
 }
 
+/// Credentials for the database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    /// Username for database
+    pub user: String,
+    /// Password for database
+    pub password: String,
+    /// Host of the db
+    pub host: String,
+    /// Port of the db
+    pub port: u16,
+    /// Name of the db
+    pub database: String,
+
+}
+
+impl DatabaseConfig {
+    pub fn get_connection_string(&self, anonymous: bool) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}/{}",
+            if !anonymous {self.user.as_str()} else {"***"},
+            if !anonymous {self.password.as_str()} else {"***"},
+            self.host,
+            self.port,
+            self.database,
+        )
+    }
+}
 /// HTTP Basic Auth credentials stored in config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
@@ -105,7 +133,13 @@ pub fn write_example_config() -> Result<()> {
             username: "admin".to_string(),
             password: "changeme".to_string(),
         },
-        database_url: "postgres://user:pass@localhost:5432/monitor".to_string(),
+        database_config: DatabaseConfig {
+            user: "postgres".to_string(),
+            password: "pass".to_string(),
+            host: "localhost".to_string(),
+            port: 5432,
+            database: "monitor".to_string(),
+        },
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
@@ -172,7 +206,13 @@ mod tests {
                 username: "testuser".to_string(),
                 password: "testpass".to_string(),
             },
-            database_url: "postgres://u:p@localhost/db".to_string(),
+            database_config: DatabaseConfig {
+                user: "u".to_string(),
+                password: "p".to_string(),
+                host: "localhost".to_string(),
+                port: 5432,
+                database: "db".to_string(),
+            },
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
                 port: 9090,
@@ -193,7 +233,16 @@ mod tests {
 
         assert_eq!(parsed.auth.username, "testuser");
         assert_eq!(parsed.auth.password, "testpass");
-        assert_eq!(parsed.database_url, "postgres://u:p@localhost/db");
+        assert_eq!(parsed.database_config.user, "u");
+        assert_eq!(parsed.database_config.password, "p");
+        assert_eq!(parsed.database_config.host, "localhost");
+        assert_eq!(parsed.database_config.database, "db");
+
+        let correct_string = parsed.database_config.get_connection_string(false);
+        assert_eq!(correct_string, "postgres://u:p@localhost:5432/db");
+        let str_for_logging = parsed.database_config.get_connection_string(true);
+        assert_eq!(str_for_logging, "postgres://***:***@localhost:5432/db");
+
         assert_eq!(parsed.server.port, 9090);
         assert_eq!(parsed.healthchecks.len(), 1);
         assert_eq!(parsed.healthchecks[0].check_type, "http");

@@ -27,6 +27,8 @@ pub struct AppState {
     pub healthcheck_state: Arc<RwLock<Vec<HealthStatus>>>,
     /// PostgreSQL connection pool for email persistence.
     pub db_pool: PgPool,
+    /// app config
+    pub email_active: bool,
 }
 
 /// Allow the axum [`BasicAuth`] extractor to retrieve [`Credentials`] from [`AppState`].

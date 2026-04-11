@@ -27,15 +27,24 @@ pub struct AcknowledgeResponse {
     pub acknowledged: u64,
 }
 
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct EmailsResponse {
+    /// if email system is active.
+    pub email_active: bool,
+    /// List of unacknowledged emails.
+    pub emails: Vec<crate::email::EmailRecord>,
+}
+
 /// `GET /emails` — return all emails that have not yet been acknowledged.
 ///
 /// Requires HTTP Basic Auth. Returns a JSON array of email records where
 /// `is_new = true`.
+/// Also shows if currently email subsystem is active
 #[utoipa::path(
     get,
     path = "/emails",
     responses(
-        (status = 200, description = "List of unacknowledged emails", body = Vec<crate::email::EmailRecord>),
+        (status = 200, description = "List of unacknowledged emails", body = EmailsResponse),
         (status = 401, description = "Unauthorized"),
     ),
     security(("basicAuth" = []))
@@ -45,7 +54,12 @@ pub async fn get_emails(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     match db::get_new_emails(&state.db_pool).await {
-        Ok(emails) => Json(emails).into_response(),
+        Ok(emails) => {
+            Json(EmailsResponse {
+                email_active: state.email_active,
+                emails
+            }).into_response()
+        },
         Err(e) => {
             warn!(error = %e, "Failed to fetch new emails from DB");
             (
