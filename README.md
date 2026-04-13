@@ -203,13 +203,13 @@ See `device/wiring_instructions.docx` for the full wiring diagram and setup guid
 
 ### Pin assignments
 
-| XIAO Pin | GPIO | Connected to |
-|---|---|---|
-| D1 | GPIO1 | Button (other leg to GND) |
-| D2 | GPIO2 | LED: All OK — green/blue |
-| D3 | GPIO21 | LED: Healthcheck Issues — red |
-| D9 | GPIO20 | LED: Email Subsystem Online — green/blue |
-| D10 | GPIO18 | LED: New Emails — yellow/amber |
+| XIAO Pin | Connected to |
+|----------|---|
+| D10      | Button (other leg to GND) |
+| D0       | LED: All OK — green/blue |
+| D1       | LED: Healthcheck Issues — red |
+| D2       | LED: Email Subsystem Online — green/blue |
+| D3       | LED: New Emails — yellow/amber |
 
 Each LED connects through a 220 Ω resistor to GND. The button uses the internal pull-up — no external resistor needed.
 

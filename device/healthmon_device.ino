@@ -13,16 +13,18 @@
  *     LED_EMAIL_OK (green/blue) – solid when email subsystem is online
  *     LED_EMAILS   (yellow)     – pulsing when new (unread) emails are present
  * - One button: press to acknowledge all emails (POST /emails/acknowledge-all).
+ *   On press: LED_EMAILS blinks 3× quickly, then turns off.
  * - No blocking delay() calls in the main loop.
  * - PWM pulsing via ESP32 LEDC hardware peripheral.
+ * - Configurable steady brightness to reduce eye strain on bright LEDs.
  *
  * Wiring (see wiring document)
  * ----------------------------
- * D2  → LED_OK       anode (via 220 Ω resistor to GND)
- * D3  → LED_ISSUES   anode (via 220 Ω resistor to GND)
- * D9  → LED_EMAIL_OK anode (via 220 Ω resistor to GND)
- * D10 → LED_EMAILS   anode (via 220 Ω resistor to GND)
- * D1  → Button (other leg to GND, internal pull-up enabled)
+ * D0  → LED_OK       anode (via 220 Ω resistor to GND)
+ * D1  → LED_ISSUES   anode (via 220 Ω resistor to GND)
+ * D2  → LED_EMAIL_OK anode (via 220 Ω resistor to GND)
+ * D3  → LED_EMAILS   anode (via 220 Ω resistor to GND)
+ * D10 → Button (other leg to GND, internal pull-up enabled)
  *
  * Arduino IDE setup
  * -----------------
@@ -33,34 +35,33 @@
  * 4. Tools → Port → select the USB-CDC port
  * 5. Sketch → Upload
  *
- * Libraries required (all bundled with the ESP32 Arduino core, no extras needed):
- *   WiFi.h, HTTPClient.h, ArduinoJson.h
- *
- * ArduinoJson must be installed separately:
- *   Sketch → Include Library → Manage Libraries → search "ArduinoJson" by Benoit Blanchon → install ≥7.x
+ * Libraries required:
+ *   WiFi.h, HTTPClient.h — bundled with ESP32 Arduino core
+ *   base64.h             — bundled with ESP32 Arduino core
+ *   ArduinoJson          — install via Library Manager (Benoit Blanchon, ≥7.x)
  */
 
 // ─── Dependencies ────────────────────────────────────────────────────────────
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <base64.h>  // ESP32 Arduino core built-in
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CONFIGURATION — edit these values before flashing
+//  CONFIGURATION — edit these values before flashing.
 //  All settings are baked into the firmware; a config change requires reflash.
 // ═══════════════════════════════════════════════════════════════════════════
-
 namespace Config {
   // Wi-Fi credentials
-  constexpr const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-  constexpr const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+  constexpr const char* WIFI_SSID     = "WIFI_SSID";
+  constexpr const char* WIFI_PASSWORD = "WIFI_PASSWORD";
 
   // healthmon backend
-  constexpr const char* BACKEND_HOST  = "http://192.168.1.100:8080";
-  constexpr const char* BASIC_AUTH    = "admin:changeme";  // user:password
+  constexpr const char* BACKEND_HOST  = "http://localhost:8000";
+  constexpr const char* BASIC_AUTH    = "admin:password";  // user:password
 
   // Polling interval for healthcheck + email status (milliseconds)
-  constexpr unsigned long POLL_INTERVAL_MS = 15000;
+  constexpr unsigned long POLL_INTERVAL_MS = 30000;
 
   // HTTP request timeout (milliseconds)
   constexpr int HTTP_TIMEOUT_MS = 8000;
@@ -72,19 +73,29 @@ namespace Config {
   constexpr unsigned long PULSE_PERIOD_MS = 1500;
 
   // LEDC PWM settings
-  constexpr uint32_t PWM_FREQ      = 5000;  // Hz
-  constexpr uint8_t  PWM_BITS      = 8;     // resolution: 0-255
-  constexpr uint8_t  PWM_MAX       = 255;
-  constexpr uint8_t  PWM_MIN       = 5;     // never fully off during pulse
+  constexpr uint32_t PWM_FREQ  = 5000;  // Hz
+  constexpr uint8_t  PWM_BITS  = 8;     // resolution: 0–255
+  constexpr uint8_t  PWM_MAX   = 255;
+  constexpr uint8_t  PWM_MIN   = 5;     // floor during pulsing (never fully off)
+
+  // Steady-on brightness (0–255).
+  // Reduce this if your LEDs are too bright in the ON state.
+  // 255 = full brightness, 60 ≈ 25%, 30 ≈ 12%.
+  constexpr uint8_t  PWM_STEADY = 15;
+
+  // Acknowledge blink animation: 3 quick flashes on LED_EMAILS after button press.
+  constexpr uint8_t  ACK_BLINK_COUNT    = 3;
+  constexpr uint32_t ACK_BLINK_ON_MS    = 80;   // LED on duration per blink
+  constexpr uint32_t ACK_BLINK_OFF_MS   = 100;  // LED off gap between blinks
 }
 
 // ─── Pin assignments ──────────────────────────────────────────────────────────
 namespace Pins {
-  constexpr uint8_t LED_OK       = D2;   // GPIO2  – "all is ok" (green/blue)
-  constexpr uint8_t LED_ISSUES   = D3;   // GPIO21 – "healthcheck issues" (red)
-  constexpr uint8_t LED_EMAIL_OK = D9;   // GPIO20 – "email subsystem online" (green/blue)
-  constexpr uint8_t LED_EMAILS   = D10;  // GPIO18 – "new emails" (yellow)
-  constexpr uint8_t BUTTON       = D1;   // GPIO1  – acknowledge emails
+  constexpr uint8_t LED_OK       = D0;   // "all is ok" (green/blue)
+  constexpr uint8_t LED_ISSUES   = D1;   // "healthcheck issues" (red)
+  constexpr uint8_t LED_EMAIL_OK = D2;   // "email subsystem online" (green/blue)
+  constexpr uint8_t LED_EMAILS   = D3;   // "new emails" (yellow)
+  constexpr uint8_t BUTTON       = D10;  // acknowledge emails
 }
 
 // ─── Forward declarations ─────────────────────────────────────────────────────
@@ -101,10 +112,73 @@ void applyLeds(const AppState& state, LedController& leds);
 String buildAuthHeader();
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  AckBlinker
+//  Non-blocking 3-flash animation played on LED_EMAILS after acknowledge.
+//  State machine: drives the LED through ON/OFF phases using millis(),
+//  then fires a completion callback when all blinks are done.
+// ═══════════════════════════════════════════════════════════════════════════
+class AckBlinker {
+public:
+  using DoneCallback = void (*)();
+
+  /** Start the blink sequence. Safe to call even if already running (restarts). */
+  void start(DoneCallback onDone) {
+    _onDone    = onDone;
+    _blinks    = 0;
+    _phase     = Phase::ON;
+    _phaseStart = millis();
+    _running   = true;
+    ledcWrite(Pins::LED_EMAILS, Config::PWM_MAX);  // first blink on immediately
+  }
+
+  /** Returns true while the animation is in progress. */
+  bool running() const { return _running; }
+
+  /**
+   * Advance the state machine. Must be called every loop() iteration.
+   * Drives LED_EMAILS independently of LedController while active.
+   */
+  void update() {
+    if (!_running) return;
+
+    uint32_t now     = millis();
+    uint32_t elapsed = now - _phaseStart;
+
+    if (_phase == Phase::ON && elapsed >= Config::ACK_BLINK_ON_MS) {
+      // End of ON phase → turn off, move to OFF gap
+      ledcWrite(Pins::LED_EMAILS, 0);
+      _blinks++;
+      if (_blinks >= Config::ACK_BLINK_COUNT) {
+        // All blinks done
+        _running = false;
+        if (_onDone) _onDone();
+      } else {
+        _phase      = Phase::OFF;
+        _phaseStart = now;
+      }
+    } else if (_phase == Phase::OFF && elapsed >= Config::ACK_BLINK_OFF_MS) {
+      // End of OFF gap → start next blink
+      ledcWrite(Pins::LED_EMAILS, Config::PWM_MAX);
+      _phase      = Phase::ON;
+      _phaseStart = now;
+    }
+  }
+
+private:
+  enum class Phase { ON, OFF };
+
+  bool         _running    = false;
+  Phase        _phase      = Phase::ON;
+  uint32_t     _phaseStart = 0;
+  uint8_t      _blinks     = 0;
+  DoneCallback _onDone     = nullptr;
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  LedController
 //  Manages four LEDs. Each LED can be in one of three modes:
 //    OFF     – duty 0
-//    ON      – duty max (fully lit)
+//    ON      – duty PWM_STEADY (configurable brightness, not always full)
 //    PULSING – duty oscillates sinusoidally between PWM_MIN and PWM_MAX
 // ═══════════════════════════════════════════════════════════════════════════
 class LedController {
@@ -112,7 +186,7 @@ public:
   enum class Mode { OFF, ON, PULSING };
 
   /**
-   * Attach LEDC PWM to all four LED pins.
+   * Attach LEDC PWM channels to all four LED pins.
    * Must be called once in setup().
    */
   void begin() {
@@ -122,28 +196,38 @@ public:
     ledcAttach(Pins::LED_EMAILS,   Config::PWM_FREQ, Config::PWM_BITS);
   }
 
-  /** Set the desired mode for a specific LED pin. */
+  /**
+   * Set the desired mode for a specific LED pin.
+   * ON uses PWM_STEADY so brightness is adjustable without changing wiring.
+   */
   void setMode(uint8_t pin, Mode mode) {
     getSlot(pin).mode = mode;
     if (mode == Mode::OFF)  ledcWrite(pin, 0);
-    if (mode == Mode::ON)   ledcWrite(pin, Config::PWM_MAX);
+    uint32_t brightness = 255;
+    if (mode == Mode::ON)   {
+      if (pin == Pins::LED_EMAIL_OK)  brightness = Config::PWM_STEADY;
+      ledcWrite(pin, brightness);
+    };
+    // PULSING duty is updated each tick in update()
   }
 
   /**
    * Update PWM duty cycles for pulsing LEDs.
    * Call this every loop() iteration; it is non-blocking.
+   * Skips LED_EMAILS if the AckBlinker is currently running (it owns that pin).
+   *
+   * @param skipEmailsPin  Pass true while AckBlinker is active.
    */
-  void update() {
-    uint32_t now = millis();
-    // Compute phase in [0, PULSE_PERIOD_MS)
+  void update(bool skipEmailsPin = false) {
+    uint32_t now   = millis();
     uint32_t phase = now % Config::PULSE_PERIOD_MS;
-    // Map phase to a sine wave in [0, PI] → value in [0, 1]
-    float t       = (float)phase / (float)Config::PULSE_PERIOD_MS; // [0,1)
-    float sine    = (sinf(t * 2.0f * PI) + 1.0f) / 2.0f;           // [0,1]
-    uint8_t duty  = (uint8_t)(Config::PWM_MIN + sine * (Config::PWM_MAX - Config::PWM_MIN));
+    float    t     = (float)phase / (float)Config::PULSE_PERIOD_MS;
+    float    sine  = (sinf(t * 2.0f * PI) + 1.0f) / 2.0f;  // [0, 1]
+    uint8_t  duty  = (uint8_t)(Config::PWM_MIN + sine * (Config::PWM_MAX - Config::PWM_MIN));
 
     for (auto& slot : _slots) {
       if (slot.mode == Mode::PULSING) {
+        if (skipEmailsPin && slot.pin == Pins::LED_EMAILS) continue;
         ledcWrite(slot.pin, duty);
       }
     }
@@ -164,22 +248,22 @@ private:
 
   Slot& getSlot(uint8_t pin) {
     for (auto& s : _slots) if (s.pin == pin) return s;
-    return _slots[0]; // fallback (shouldn't happen)
+    return _slots[0];
   }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ButtonHandler
 //  Debounces the acknowledge button and fires a callback on a clean press.
-//  Uses no delay(); state machine approach.
+//  Uses no delay(); pure state-machine approach.
 // ═══════════════════════════════════════════════════════════════════════════
 class ButtonHandler {
 public:
   using Callback = void (*)();
 
   /**
-   * @param pin      GPIO pin of the button (active-LOW with INPUT_PULLUP)
-   * @param callback Function to call on a confirmed button press
+   * @param pin      GPIO pin (active-LOW, INPUT_PULLUP)
+   * @param callback Called once per confirmed press
    */
   void begin(uint8_t pin, Callback callback) {
     _pin      = pin;
@@ -187,64 +271,69 @@ public:
     pinMode(pin, INPUT_PULLUP);
   }
 
-  /**
-   * Poll the button state. Must be called every loop() iteration.
-   * Fires the callback once per physical press after debounce settles.
-   */
+  /** Poll button state. Must be called every loop() iteration. */
   void update() {
-    bool reading = (digitalRead(_pin) == LOW); // active-LOW
+    bool reading = (digitalRead(_pin) == LOW);
     uint32_t now = millis();
 
     if (reading != _lastReading) {
-      // Edge detected – start/reset debounce timer
       _debounceStart = now;
       _lastReading   = reading;
     }
 
     if ((now - _debounceStart) >= Config::DEBOUNCE_MS) {
-      // Signal has been stable for the debounce window
       if (reading && !_confirmed) {
-        // Stable press – fire once
         _confirmed = true;
         if (_callback) _callback();
       }
       if (!reading) {
-        // Button released – allow next press
         _confirmed = false;
       }
     }
   }
 
 private:
-  uint8_t    _pin           = 0;
-  Callback   _callback      = nullptr;
-  bool       _lastReading   = false;
-  bool       _confirmed     = false;
-  uint32_t   _debounceStart = 0;
+  uint8_t  _pin           = 0;
+  Callback _callback      = nullptr;
+  bool     _lastReading   = false;
+  bool     _confirmed     = false;
+  uint32_t _debounceStart = 0;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  AppState
-//  Plain data struct holding the latest observed state of the backend.
+//  Plain data struct holding the latest observed state from the backend.
 // ═══════════════════════════════════════════════════════════════════════════
 struct AppState {
   bool backendReachable  = false;  ///< Last HTTP poll succeeded
   bool allChecksHealthy  = false;  ///< No failing healthchecks
-  bool emailSubsystemOn  = false;  ///< At least one email account configured
-  bool hasNewEmails      = false;  ///< Unacknowledged emails exist
+  bool emailSubsystemOn  = false;  ///< email_active flag from /emails response
+  bool hasNewEmails      = false;  ///< emails array is non-empty
 };
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
 LedController  gLeds;
 ButtonHandler  gButton;
+AckBlinker     gAckBlinker;
 AppState       gState;
 
 unsigned long  gLastPollMs = 0;
-bool           gAckPending = false;  ///< Set by button ISR, consumed in loop()
+bool           gAckPending = false;  ///< Set by button callback, consumed in loop()
 
-// ─── Button callback (called from ButtonHandler, safe context) ────────────────
+// ─── Callbacks ───────────────────────────────────────────────────────────────
+
+/** Called by ButtonHandler on confirmed press. */
 void onButtonPress() {
   gAckPending = true;
+  Serial.println("[button] ACK pressed");
+}
+
+/**
+ * Called by AckBlinker when the 3-blink animation finishes.
+ * Restores LED_EMAILS to OFF (acknowledge has cleared the emails).
+ */
+void onAckBlinkDone() {
+  gLeds.setMode(Pins::LED_EMAILS, LedController::Mode::OFF);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -252,13 +341,11 @@ void onButtonPress() {
 // ═══════════════════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(115200);
-  delay(500); // brief settle for USB-CDC
+  delay(500);  // brief settle for USB-CDC
 
   Serial.println("[healthmon-device] Starting up");
 
   gLeds.begin();
-
-  // Flash all LEDs briefly to confirm power-on
   selfTest();
 
   gButton.begin(Pins::BUTTON, onButtonPress);
@@ -275,22 +362,31 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
-  // ── 1. Update LED animations (runs every tick, non-blocking) ──────────
-  gLeds.update();
+  // ── 1. Advance blink animation (owns LED_EMAILS pin while running) ──────
+  gAckBlinker.update();
 
-  // ── 2. Check button ───────────────────────────────────────────────────
+  // ── 2. Update LED pulsing (skip LED_EMAILS if blinker is active) ────────
+  gLeds.update(gAckBlinker.running());
+
+  // ── 3. Check button ──────────────────────────────────────────────────────
   gButton.update();
 
-  // ── 3. Handle pending acknowledge request ─────────────────────────────
+  // ── 4. Handle pending acknowledge ───────────────────────────────────────
   if (gAckPending) {
     gAckPending = false;
     Serial.println("[button] Acknowledge all emails requested");
+
+    // Start 3-blink animation immediately (non-blocking).
+    // The HTTP request fires after, so visual feedback is instant.
+    gAckBlinker.start(onAckBlinkDone);
+
     acknowledgeAllEmails();
-    // Force an immediate re-poll to update LED state
+
+    // Force an immediate re-poll to refresh LED state after acknowledging
     gLastPollMs = now - Config::POLL_INTERVAL_MS;
   }
 
-  // ── 4. Reconnect Wi-Fi if lost ────────────────────────────────────────
+  // ── 5. Reconnect Wi-Fi if lost ───────────────────────────────────────────
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[wifi] Connection lost – reconnecting");
     gState.backendReachable = false;
@@ -299,7 +395,7 @@ void loop() {
     return;
   }
 
-  // ── 5. Poll backend on schedule ───────────────────────────────────────
+  // ── 6. Poll backend on schedule ──────────────────────────────────────────
   if (now - gLastPollMs >= Config::POLL_INTERVAL_MS) {
     gLastPollMs = now;
     pollBackend(gState);
@@ -311,22 +407,21 @@ void loop() {
 //  Wi-Fi
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Block until Wi-Fi is connected. Shows a pulsing LED_OK while waiting. */
+/** Block until Wi-Fi is connected. Pulses LED_OK while waiting. */
 void connectWifi() {
   Serial.printf("[wifi] Connecting to %s\n", Config::WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(Config::WIFI_SSID, Config::WIFI_PASSWORD);
 
-  // Pulse LED_OK while waiting (LED_ISSUES off)
   gLeds.setMode(Pins::LED_OK,       LedController::Mode::PULSING);
   gLeds.setMode(Pins::LED_ISSUES,   LedController::Mode::OFF);
   gLeds.setMode(Pins::LED_EMAIL_OK, LedController::Mode::OFF);
   gLeds.setMode(Pins::LED_EMAILS,   LedController::Mode::OFF);
 
-  uint32_t timeout = millis() + 20000; // 20 s max
+  uint32_t timeout = millis() + 20000;
   while (WiFi.status() != WL_CONNECTED && millis() < timeout) {
     gLeds.update();
-    delay(10); // minimal yield; acceptable during blocking connect
+    delay(10);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -344,22 +439,7 @@ void connectWifi() {
 
 /** Build a Basic Auth header value from the configured credentials. */
 String buildAuthHeader() {
-  // Base64-encode "user:password"
-  String creds   = String(Config::BASIC_AUTH);
-  // The ESP32 Arduino core provides base64 encoding via mbedtls
-  size_t  inLen  = creds.length();
-  size_t  outLen = ((inLen + 2) / 3) * 4 + 1;
-  char*   buf    = new char[outLen];
-  unsigned char elen;
-  // Use the mbedtls base64 encoder available in the ESP32 SDK
-  mbedtls_base64_encode(
-    (unsigned char*)buf, outLen, (size_t*)&elen,
-    (const unsigned char*)creds.c_str(), inLen
-  );
-  buf[elen] = '\0';
-  String result = "Basic " + String(buf);
-  delete[] buf;
-  return result;
+  return "Basic " + base64::encode(String(Config::BASIC_AUTH));
 }
 
 /**
@@ -378,7 +458,7 @@ void pollBackend(AppState& state) {
 
 /**
  * GET /healthchecks
- * Sets state.allChecksHealthy = true only if ALL entries are healthy.
+ * Sets state.allChecksHealthy = true only if ALL entries report healthy=true.
  * Returns true if the HTTP request succeeded.
  */
 bool fetchHealthchecks(AppState& state) {
@@ -396,7 +476,6 @@ bool fetchHealthchecks(AppState& state) {
     return false;
   }
 
-  // Parse JSON array: [{"healthy": bool, ...}, ...]
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, http.getString());
   http.end();
@@ -420,8 +499,13 @@ bool fetchHealthchecks(AppState& state) {
 
 /**
  * GET /emails
- * - emailSubsystemOn = true if the endpoint responds (200 or empty array)
- * - hasNewEmails     = true if the returned array is non-empty
+ *
+ * Response shape (from backend):
+ *   { "email_active": bool, "emails": [...] }
+ *
+ * - state.emailSubsystemOn = value of the top-level "email_active" field.
+ * - state.hasNewEmails     = true if the "emails" array is non-empty.
+ *
  * Returns true if the HTTP request succeeded.
  */
 bool fetchEmails(AppState& state) {
@@ -451,15 +535,18 @@ bool fetchEmails(AppState& state) {
     return false;
   }
 
-  state.emailSubsystemOn = true;
-  state.hasNewEmails     = (doc.as<JsonArray>().size() > 0);
+  // Read the top-level "email_active" boolean flag.
+  state.emailSubsystemOn = doc["email_active"].as<bool>();
+
+  // Count entries in the "emails" array.
+  state.hasNewEmails = (doc["emails"].as<JsonArray>().size() > 0);
+
   return true;
 }
 
 /**
  * POST /emails/acknowledge-all
- * Fires on button press. Logs the result; does not block the main loop
- * beyond the HTTP round trip.
+ * Fires on button press. Does not block the main loop beyond the HTTP round trip.
  */
 void acknowledgeAllEmails() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -484,26 +571,30 @@ void acknowledgeAllEmails() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Translate AppState into LED modes:
+ * Translate AppState into LED modes.
  *
  * LED_OK (green/blue)
- *   ON      if backendReachable && allChecksHealthy && Wi-Fi connected
- *   PULSING otherwise (any problem)
+ *   ON      — Wi-Fi up AND backend reachable AND all healthchecks healthy
+ *   PULSING — any of the above is false
  *
  * LED_ISSUES (red)
- *   PULSING if !backendReachable || !allChecksHealthy
- *   OFF     otherwise
+ *   PULSING — backend unreachable or at least one healthcheck failing
+ *   OFF     — everything healthy
  *
  * LED_EMAIL_OK (green/blue)
- *   ON  if emailSubsystemOn
- *   OFF otherwise
+ *   ON  — email_active is true (backend has email accounts configured + polling)
+ *   OFF — email_active is false
  *
  * LED_EMAILS (yellow)
- *   PULSING if hasNewEmails
- *   OFF     otherwise
+ *   PULSING — new unacknowledged emails present
+ *   OFF     — no new emails
+ *   (overridden by AckBlinker for a short 3-blink animation on button press)
  */
 void applyLeds(const AppState& state, LedController& leds) {
-  bool wifiOk    = (WiFi.status() == WL_CONNECTED);
+  // Don't touch LED_EMAILS if the ack blink animation is in progress.
+  bool blinkActive = gAckBlinker.running();
+
+  bool wifiOk       = (WiFi.status() == WL_CONNECTED);
   bool everythingOk = wifiOk && state.backendReachable && state.allChecksHealthy;
 
   leds.setMode(Pins::LED_OK,
@@ -515,8 +606,10 @@ void applyLeds(const AppState& state, LedController& leds) {
   leds.setMode(Pins::LED_EMAIL_OK,
     state.emailSubsystemOn ? LedController::Mode::ON : LedController::Mode::OFF);
 
-  leds.setMode(Pins::LED_EMAILS,
-    state.hasNewEmails ? LedController::Mode::PULSING : LedController::Mode::OFF);
+  if (!blinkActive) {
+    leds.setMode(Pins::LED_EMAILS,
+      state.hasNewEmails ? LedController::Mode::PULSING : LedController::Mode::OFF);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -525,7 +618,7 @@ void applyLeds(const AppState& state, LedController& leds) {
 
 /**
  * Flash all LEDs in sequence on startup to confirm wiring and PWM work.
- * Uses delay() once — only during setup, not the main loop.
+ * Uses delay() — only during setup, never in the main loop.
  */
 void selfTest() {
   const uint8_t pins[] = {
@@ -536,7 +629,6 @@ void selfTest() {
     delay(200);
     ledcWrite(pin, 0);
   }
-  // Brief full-on for all
   for (uint8_t pin : pins) ledcWrite(pin, Config::PWM_MAX);
   delay(400);
   for (uint8_t pin : pins) ledcWrite(pin, 0);

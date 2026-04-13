@@ -27,11 +27,11 @@ Seeed Studio XIAO ESP32-C6.
 
 | XIAO Pin | ESP32-C6 GPIO | Connected To         | Notes                                              |
 |----------|---------------|----------------------|----------------------------------------------------|
-| D1       | GPIO1         | Button (one leg)     | Other leg to GND; internal pull-up in firmware     |
-| D2       | GPIO2         | LED_OK anode         | Via 220 Ω resistor to GND — green or blue LED      |
-| D3       | GPIO21        | LED_ISSUES anode     | Via 220 Ω resistor to GND — red LED               |
-| D9       | GPIO20        | LED_EMAIL_OK anode   | Via 220 Ω resistor to GND — green or blue LED      |
-| D10      | GPIO18        | LED_EMAILS anode     | Via 220 Ω resistor to GND — yellow or amber LED    |
+| D10      | GPIO18        | Button (one leg)     | Other leg to GND; internal pull-up in firmware     |
+| D0       | GPIO0         | LED_OK anode         | Via 220 Ω resistor to GND — green or blue LED      |
+| D1       | GPIO1         | LED_ISSUES anode     | Via 220 Ω resistor to GND — red LED               |
+| D2       | GPIO2         | LED_EMAIL_OK anode   | Via 220 Ω resistor to GND — green or blue LED      |
+| D3       | GPIO21        | LED_EMAILS anode     | Via 220 Ω resistor to GND — yellow or amber LED    |
 | GND      | GND           | Common ground        | Shared by all LED resistors and button             |
 | 5V       | VBUS          | USB-C power          | Board powered via USB-C, no external supply needed |
 
@@ -45,19 +45,19 @@ XIAO ESP32-C6
 │                     5V  │── USB-C power (no connection needed)
 │                    GND  │──┬──────────────────────────────────────┐
 │                         │  │                                      │
-│  D1  (GPIO1)  ──────────┼──┤ BUTTON ── GND                       │
+│  D10  (GPIO18)  ────────┼──┤ BUTTON ── GND                        │
 │                         │  │  (internal pull-up in firmware)      │
 │                         │  │                                      │
-│  D2  (GPIO2)  ──────────┼──┤ 220Ω ── LED_OK (+) ── GND           │
+│  D0  (GPIO0)  ──────────┼──┤ 220Ω ── LED_OK (+) ── GND            │
 │                         │  │         [green/blue]                 │
 │                         │  │                                      │
-│  D3  (GPIO21) ──────────┼──┤ 220Ω ── LED_ISSUES (+) ── GND       │
+│  D1  (GPIO1) ───────────┼──┤ 220Ω ── LED_ISSUES (+) ── GND        │
 │                         │  │         [red]                        │
 │                         │  │                                      │
-│  D9  (GPIO20) ──────────┼──┤ 220Ω ── LED_EMAIL_OK (+) ── GND     │
+│  D2  (GPIO2) ───────────┼──┤ 220Ω ── LED_EMAIL_OK (+) ── GND      │
 │                         │  │         [green/blue]                 │
 │                         │  │                                      │
-│  D10 (GPIO18) ──────────┼──┤ 220Ω ── LED_EMAILS (+) ── GND       │
+│  D3 (GPIO21) ───────────┼──┤ 220Ω ── LED_EMAILS (+) ── GND        │
 │                         │     [yellow/amber]                      │
 └─────────────────────────┘
 ```
