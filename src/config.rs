@@ -20,6 +20,47 @@ pub struct AppConfig {
     pub healthchecks: Vec<HealthCheckConfig>,
     /// List of IMAP email account configurations (empty disables email monitoring).
     pub emails: Vec<EmailConfig>,
+    /// Currency / commodity rates. Optional: configs written before v1.2 have no
+    /// `currency` key and get the defaults below.
+    #[serde(default)]
+    pub currency: CurrencyConfig,
+}
+
+/// Currency and commodity rate settings (`GET /currency`, `GET /currency/json`).
+///
+/// Every field is optional; missing fields take the defaults shown in
+/// [`CurrencyConfig::default`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CurrencyConfig {
+    /// Master switch. `false` stops all rate fetching; the endpoints return 404.
+    pub enabled: bool,
+    /// Crypto pairs (`BASE-QUOTE`), fetched from Coinbase with CoinGecko as fallback.
+    pub crypto_pairs: Vec<String>,
+    /// Minutes between crypto updates.
+    pub crypto_interval_minutes: u64,
+    /// Precious metal symbols (`XAU` gold, `XAG` silver, `XPT`, `XPD`), USD per troy ounce.
+    pub metals: Vec<String>,
+    /// Minutes between metal updates.
+    pub metals_interval_minutes: u64,
+    /// Currencies to quote in BYN using the official NBRB rate.
+    pub nbrb_currencies: Vec<String>,
+    /// Daily NBRB update time in UTC, `HH:MM`.
+    pub nbrb_daily_at_utc: String,
+}
+
+impl Default for CurrencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            crypto_pairs: vec!["BTC-USD".into(), "ETH-USD".into()],
+            crypto_interval_minutes: 30,
+            metals: vec!["XAU".into(), "XAG".into()],
+            metals_interval_minutes: 60,
+            nbrb_currencies: vec!["USD".into(), "EUR".into(), "RUB".into()],
+            nbrb_daily_at_utc: "07:00".into(),
+        }
+    }
 }
 
 /// Credentials for the database
@@ -185,6 +226,7 @@ pub fn write_example_config() -> Result<()> {
                 recent_lookback: "1d".to_string(),
             },
         ],
+        currency: CurrencyConfig::default(),
     };
 
     let json = serde_json::to_string_pretty(&example)
@@ -226,6 +268,7 @@ mod tests {
                 failure_threshold: 2,
             }],
             emails: vec![],
+            currency: CurrencyConfig::default(),
         };
 
         let json = serde_json::to_string(&original).expect("serialize");
@@ -247,6 +290,34 @@ mod tests {
         assert_eq!(parsed.healthchecks.len(), 1);
         assert_eq!(parsed.healthchecks[0].check_type, "http");
         assert!(parsed.emails.is_empty());
+    }
+
+    /// A v1.1 config (no `currency` key) must still load, with currency defaults.
+    #[test]
+    fn test_parse_config_without_currency_section() {
+        let json = r#"{
+            "auth": {"username": "a", "password": "b"},
+            "database_config": {"user": "u", "password": "p", "host": "h", "port": 5432, "database": "d"},
+            "server": {"host": "0.0.0.0", "port": 8080, "enable_docs": true},
+            "healthchecks": [],
+            "emails": []
+        }"#;
+        let parsed: AppConfig = serde_json::from_str(json).expect("v1.1 config must parse");
+        assert!(parsed.currency.enabled);
+        assert_eq!(parsed.currency.crypto_pairs, ["BTC-USD", "ETH-USD"]);
+        assert_eq!(parsed.currency.crypto_interval_minutes, 30);
+        assert_eq!(parsed.currency.metals_interval_minutes, 60);
+        assert_eq!(parsed.currency.nbrb_daily_at_utc, "07:00");
+    }
+
+    /// A partial `currency` section keeps defaults for the missing fields.
+    #[test]
+    fn test_parse_partial_currency_section() {
+        let json = r#"{"enabled": false, "metals": ["XAU"]}"#;
+        let parsed: CurrencyConfig = serde_json::from_str(json).expect("partial currency config");
+        assert!(!parsed.enabled);
+        assert_eq!(parsed.metals, ["XAU"]);
+        assert_eq!(parsed.nbrb_currencies, ["USD", "EUR", "RUB"]);
     }
 
     /// Parsing JSON without the required `auth` field must return an error.

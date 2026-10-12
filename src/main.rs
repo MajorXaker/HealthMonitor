@@ -6,6 +6,7 @@
 mod api;
 mod auth;
 mod config;
+mod currency;
 mod email;
 mod healthcheck;
 
@@ -80,7 +81,16 @@ async fn main() -> anyhow::Result<()> {
         info!("No email accounts configured — email monitoring disabled");
     }
 
-    // 9. Build the axum router.
+    // 9. Currency rates (v1.2) — in memory only, refreshed by background loops.
+    let currency_state: currency::RateState = Arc::new(RwLock::new(Vec::new()));
+    if cfg.currency.enabled {
+        *currency_state.write().await = currency::runner::initial_slots(&cfg.currency);
+        currency::runner::spawn_currency_loops(cfg.currency.clone(), Arc::clone(&currency_state));
+    } else {
+        info!("Currency rates disabled in config");
+    }
+
+    // 10. Build the axum router.
     let app_state = AppState {
         credentials: Credentials {
             username: cfg.auth.username.clone(),
@@ -89,10 +99,12 @@ async fn main() -> anyhow::Result<()> {
         healthcheck_state,
         db_pool: pool,
         email_active: !cfg.emails.is_empty(),
+        currency_state,
+        currency_active: cfg.currency.enabled,
     };
     let router = create_router(app_state, cfg.server.enable_docs);
 
-    // 10. Start the HTTP server.
+    // 11. Start the HTTP server.
     info!(address = %format!("http://{}:{}", cfg.server.host, cfg.server.port), "HTTP server listening");
 
     let bind_addr = format!("{}:{}", cfg.server.host, cfg.server.port);
