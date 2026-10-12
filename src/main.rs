@@ -84,8 +84,21 @@ async fn main() -> anyhow::Result<()> {
     // 9. Currency rates (v1.2) — in memory only, refreshed by background loops.
     let currency_state: currency::RateState = Arc::new(RwLock::new(Vec::new()));
     if cfg.currency.enabled {
-        *currency_state.write().await = currency::runner::initial_slots(&cfg.currency);
-        currency::runner::spawn_currency_loops(cfg.currency.clone(), Arc::clone(&currency_state));
+        let mut slots = currency::runner::initial_slots(&cfg.currency);
+        // Restore the last known values so /currency answers right after a restart.
+        match currency::db::load_rates(&pool).await {
+            Ok(stored) => {
+                let restored = currency::db::restore_into(&mut slots, &stored);
+                info!(restored, total = slots.len(), "Restored currency rates from database");
+            }
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "Could not load stored currency rates"),
+        }
+        *currency_state.write().await = slots;
+        currency::runner::spawn_currency_loops(
+            cfg.currency.clone(),
+            Arc::clone(&currency_state),
+            pool.clone(),
+        );
     } else {
         info!("Currency rates disabled in config");
     }

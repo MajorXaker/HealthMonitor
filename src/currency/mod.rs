@@ -8,9 +8,12 @@
 //! | metal  | gold-api.com (USD per troy ounce)        | every 60 minutes        |
 //! | nbrb   | National Bank of the Republic of Belarus | daily at 07:00 UTC      |
 //!
-//! The latest values live in memory only (no database table): after a restart
-//! every group is fetched once immediately.
+//! Requests are always served from memory. Every successful fetch is also
+//! written to the `currency_rates` table, so after a restart the last known
+//! values are available immediately and groups whose stored values are still
+//! fresh skip their first fetch.
 
+pub mod db;
 pub mod format;
 pub mod providers;
 pub mod runner;
@@ -32,6 +35,17 @@ pub enum RateGroup {
     Metal,
     /// Official NBRB exchange rate in BYN.
     Nbrb,
+}
+
+impl RateGroup {
+    /// Name used in JSON and in the `currency_rates.rate_group` column.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RateGroup::Crypto => "crypto",
+            RateGroup::Metal => "metal",
+            RateGroup::Nbrb => "nbrb",
+        }
+    }
 }
 
 /// One rate as exposed by `GET /currency/json`.
