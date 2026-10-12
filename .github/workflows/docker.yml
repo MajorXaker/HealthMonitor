@@ -81,4 +81,5 @@ jobs:
           # Layer cache: reuse layers from the last pushed image to speed up
           # the Rust compilation step on subsequent builds.
           cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
-          cache-to:   type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+          # Writing the cache needs registry auth, which PR builds don't have.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:buildcache,mode=max', env.IMAGE_NAME) || '' }}

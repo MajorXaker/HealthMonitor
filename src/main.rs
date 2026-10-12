@@ -6,6 +6,7 @@
 mod api;
 mod auth;
 mod config;
+mod currency;
 mod email;
 mod healthcheck;
 
@@ -80,7 +81,29 @@ async fn main() -> anyhow::Result<()> {
         info!("No email accounts configured — email monitoring disabled");
     }
 
-    // 9. Build the axum router.
+    // 9. Currency rates (v1.2) — in memory only, refreshed by background loops.
+    let currency_state: currency::RateState = Arc::new(RwLock::new(Vec::new()));
+    if cfg.currency.enabled {
+        let mut slots = currency::runner::initial_slots(&cfg.currency);
+        // Restore the last known values so /currency answers right after a restart.
+        match currency::db::load_rates(&pool).await {
+            Ok(stored) => {
+                let restored = currency::db::restore_into(&mut slots, &stored);
+                info!(restored, total = slots.len(), "Restored currency rates from database");
+            }
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "Could not load stored currency rates"),
+        }
+        *currency_state.write().await = slots;
+        currency::runner::spawn_currency_loops(
+            cfg.currency.clone(),
+            Arc::clone(&currency_state),
+            pool.clone(),
+        );
+    } else {
+        info!("Currency rates disabled in config");
+    }
+
+    // 10. Build the axum router.
     let app_state = AppState {
         credentials: Credentials {
             username: cfg.auth.username.clone(),
@@ -89,10 +112,12 @@ async fn main() -> anyhow::Result<()> {
         healthcheck_state,
         db_pool: pool,
         email_active: !cfg.emails.is_empty(),
+        currency_state,
+        currency_active: cfg.currency.enabled,
     };
     let router = create_router(app_state, cfg.server.enable_docs);
 
-    // 10. Start the HTTP server.
+    // 11. Start the HTTP server.
     info!(address = %format!("http://{}:{}", cfg.server.host, cfg.server.port), "HTTP server listening");
 
     let bind_addr = format!("{}:{}", cfg.server.host, cfg.server.port);

@@ -113,7 +113,7 @@ Rotate the encoder to move between screens; the list wraps around.
 |-----------------|----------------------------------------------------------------------|
 | Email (one each)| Header `Mail n/N` + account, sender, subject (2 lines), local date   |
 | Healthchecks    | Header with `ok/total OK`, 4 services per page; failing ones inverted with `FAIL` |
-| Rates           | Plain text from the backend (placeholder until backend support)      |
+| Rates           | `GET /currency` plain text, 4 lines per screen (`Rates 1/2`); `*` = stale value. Placeholder on backends older than v1.2 |
 
 - Emails are listed newest first. Up to 10 are kept on the device; the last
   one shows `+N more` if the backend has more.

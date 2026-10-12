@@ -1,5 +1,6 @@
 //! API layer: axum router setup and shared application state.
 
+pub mod currency_routes;
 pub mod email_routes;
 pub mod healthcheck_routes;
 
@@ -16,6 +17,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::auth::Credentials;
+use crate::currency::RateState;
 use crate::healthcheck::HealthStatus;
 
 /// Shared application state threaded through all axum handlers.
@@ -29,6 +31,10 @@ pub struct AppState {
     pub db_pool: PgPool,
     /// app config
     pub email_active: bool,
+    /// Latest currency / commodity rates, updated by the background loops.
+    pub currency_state: RateState,
+    /// `false` when `currency.enabled` is off: currency endpoints return 404.
+    pub currency_active: bool,
 }
 
 /// Allow the axum [`BasicAuth`] extractor to retrieve [`Credentials`] from [`AppState`].
@@ -58,6 +64,8 @@ async fn heartbeat() -> impl IntoResponse {
         email_routes::get_emails,
         email_routes::acknowledge_emails,
         email_routes::acknowledge_all_emails,
+        currency_routes::get_currency_text,
+        currency_routes::get_currency_json,
         heartbeat,
     ),
     components(schemas(
@@ -65,8 +73,11 @@ async fn heartbeat() -> impl IntoResponse {
         crate::email::EmailRecord,
         crate::api::email_routes::AcknowledgeRequest,
         crate::api::email_routes::AcknowledgeResponse,
+        crate::api::currency_routes::CurrencyResponse,
+        crate::currency::Rate,
+        crate::currency::RateGroup,
     )),
-    info(title = "healthmon", version = "0.1.0", description = "Healthcheck & Email Monitor API"),
+    info(title = "healthmon", version = "1.2.0", description = "Healthcheck, Email & Currency Monitor API"),
     modifiers(&SecurityAddon),
 )]
 pub struct ApiDoc;
@@ -95,6 +106,8 @@ impl utoipa::Modify for SecurityAddon {
 /// - `GET  /emails`                    → emails with `is_new = true`
 /// - `POST /emails/acknowledge`        → mark emails as read
 /// - `POST /emails/acknowledge-all`    → mark all emails as read
+/// - `GET  /currency`                  → rates as plain text (device display)
+/// - `GET  /currency/json`             → rates with metadata
 /// - `GET  /docs`                      → Swagger UI
 pub fn create_router(app_state: AppState, enable_docs: bool) -> Router {
     let router = Router::new().route("/__heartbeat__", get(heartbeat))
@@ -110,7 +123,9 @@ pub fn create_router(app_state: AppState, enable_docs: bool) -> Router {
         .route(
             "/emails/acknowledge-all",
             post(email_routes::acknowledge_all_emails),
-        );
+        )
+        .route("/currency", get(currency_routes::get_currency_text))
+        .route("/currency/json", get(currency_routes::get_currency_json));
 
     let router = if enable_docs {
         router.merge(SwaggerUi::new("/docs").url("/docs/openapi.json", ApiDoc::openapi()))

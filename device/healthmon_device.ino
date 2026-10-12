@@ -86,10 +86,11 @@ namespace Config {
   constexpr const char* BACKEND_HOST  = "http://localhost:8000";
   constexpr const char* BASIC_AUTH    = "admin:password";  // user:password
 
-  // Optional plain-text currency endpoint (path on BACKEND_HOST).
-  // nullptr = disabled; the currency screen then shows a placeholder.
-  // When set, the response body (text/plain, one rate per line) is shown as is.
-  constexpr const char* CURRENCY_PATH = nullptr;  // e.g. "/currency"
+  // Plain-text currency endpoint (path on BACKEND_HOST), backend ≥ v1.2.
+  // The body (text/plain, one rate per line, 21 chars) is shown as is,
+  // 4 lines per screen. nullptr = disabled → placeholder screen.
+  // Against an older backend the request returns 404 and the placeholder stays.
+  constexpr const char* CURRENCY_PATH = "/currency";
 
   // Polling interval for healthcheck + email status (milliseconds)
   constexpr unsigned long POLL_INTERVAL_MS = 30000;
@@ -152,9 +153,11 @@ namespace Limits {
   constexpr size_t  SUBJECT_LEN       = 112;
   constexpr size_t  ACCOUNT_LEN       = 32;
   constexpr size_t  CHECK_NAME_LEN    = 48;
-  constexpr size_t  CURRENCY_LEN      = 256;
+  constexpr size_t  CURRENCY_LEN      = 384;
+  constexpr uint8_t LINES_PER_PAGE    = 4;   // content lines per screen
+  constexpr uint8_t MAX_RATE_PAGES    = 4;
   constexpr uint8_t MAX_SCREENS       =
-      MAX_EMAILS + (MAX_CHECKS + CHECKS_PER_PAGE - 1) / CHECKS_PER_PAGE + 1;
+      MAX_EMAILS + (MAX_CHECKS + CHECKS_PER_PAGE - 1) / CHECKS_PER_PAGE + MAX_RATE_PAGES;
 }
 
 // ─── Pin assignments ──────────────────────────────────────────────────────────
@@ -799,6 +802,28 @@ bool wakeDisplay() {
 
 // ─── Screen list ────────────────────────────────────────────────────────────
 
+/** Non-empty lines in the currency text. */
+uint8_t currencyLineCount() {
+  uint8_t lines = 0;
+  const char* p = Ui::view.currency;
+  while (*p) {
+    const char* nl = strchr(p, '\n');
+    size_t len = nl ? (size_t)(nl - p) : strlen(p);
+    if (len > 0 && !(len == 1 && p[0] == '\r')) lines++;
+    if (!nl) break;
+    p = nl + 1;
+  }
+  return lines;
+}
+
+/** Rate screens needed (at least one, for the placeholder). */
+uint8_t currencyPages() {
+  uint8_t pages = (currencyLineCount() + Limits::LINES_PER_PAGE - 1) / Limits::LINES_PER_PAGE;
+  if (pages == 0) pages = 1;
+  if (pages > Limits::MAX_RATE_PAGES) pages = Limits::MAX_RATE_PAGES;
+  return pages;
+}
+
 void rebuildScreens() {
   // Remember what is on screen now, to find it again after the rebuild.
   bool      hadCurrent = Ui::screenCount > 0;
@@ -814,7 +839,9 @@ void rebuildScreens() {
   for (uint8_t p = 0; p < pages; p++)
     Ui::screens[n++] = { ScreenType::HEALTH, p };
 
-  Ui::screens[n++] = { ScreenType::CURRENCY, 0 };
+  uint8_t ratePages = currencyPages();
+  for (uint8_t p = 0; p < ratePages; p++)
+    Ui::screens[n++] = { ScreenType::CURRENCY, p };
   Ui::screenCount = n;
 
   if (!hadCurrent) { Ui::current = 0; return; }
@@ -1078,8 +1105,12 @@ namespace Draw {
     }
   }
 
-  void currencyScreen() {
-    header("Rates", "");
+  void currencyScreen(const ScreenRef& ref) {
+    uint8_t pages = currencyPages();
+    char title[24];
+    if (pages > 1) snprintf(title, sizeof(title), "Rates %ld/%u", (long)ref.key + 1, pages);
+    else           snprintf(title, sizeof(title), "Rates");
+    header(title, "");
     const char* t = Ui::view.currency;
     if (!t[0]) {
       text(0, LINE_Y[0], "No data yet");
@@ -1087,17 +1118,22 @@ namespace Draw {
       text(0, LINE_Y[2], " pending)");
       return;
     }
-    // Plain text from the backend, one entry per line.
+    // Plain text from the backend, one entry per line; skip earlier pages.
     char line[Limits::SUBJECT_LEN];
-    uint8_t l = 0;
+    uint16_t first = ref.key * Limits::LINES_PER_PAGE;
+    uint16_t idx = 0;
+    uint8_t  l = 0;
     const char* p = t;
-    while (*p && l < 4) {
+    while (*p && l < Limits::LINES_PER_PAGE) {
       const char* nl = strchr(p, '\n');
       size_t n = nl ? (size_t)(nl - p) : strlen(p);
       if (n >= sizeof(line)) n = sizeof(line) - 1;
       memcpy(line, p, n); line[n] = 0;
-      if (n && line[n - 1] == '\r') line[n - 1] = 0;
-      text(0, LINE_Y[l++], line);
+      if (n && line[n - 1] == '\r') line[--n] = 0;
+      if (n > 0) {
+        if (idx >= first) text(0, LINE_Y[l++], line);
+        idx++;
+      }
       if (!nl) break;
       p = nl + 1;
     }
@@ -1132,7 +1168,7 @@ namespace Draw {
       switch (ref.type) {
         case ScreenType::EMAIL:    emailScreen(ref);  break;
         case ScreenType::HEALTH:   healthScreen(ref); break;
-        case ScreenType::CURRENCY: currencyScreen();  break;
+        case ScreenType::CURRENCY: currencyScreen(ref); break;
       }
     }
     holdBar();

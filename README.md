@@ -1,8 +1,9 @@
 # healthmon
 
-A two-part system for monitoring application health and email inboxes:
+A two-part system for monitoring application health, email inboxes and currency rates:
 
 - **Backend** (`/`) — a lightweight async Rust service that runs healthchecks, polls IMAP accounts, persists state to PostgreSQL, and exposes results over a secured REST API.
+- **Currency rates** — BTC/ETH, gold/silver and official NBRB rates (USD/EUR/RUB → BYN) from free, keyless APIs, exposed as plain text for the device and as JSON.
 - **Hardware device** (`/device`) — a USB-powered indicator based on the Seeed Studio XIAO ESP32-C6, with four LEDs, a 128x64 OLED display, a rotary encoder and a button, that polls the backend over Wi-Fi and gives at-a-glance system status.
 
 ---
@@ -30,6 +31,7 @@ healthmon/
 - **File-based healthchecks** — watches a folder for a trigger file; deletes it when found (app re-creates it to signal liveness)
 - **Multiple email accounts** — polls any number of IMAP accounts; stores metadata (subject, sender, date) in PostgreSQL
 - **Email acknowledgement** — mark individual emails or all emails as received via REST
+- **Currency rates** — crypto every 30 min, metals every 60 min, NBRB daily at 07:00 UTC; last values stored in PostgreSQL and restored on startup
 - **HTTP Basic Auth** — all REST endpoints are protected
 - **OpenAPI docs** — live Swagger UI at `/docs`
 - **Liveness probe** — `GET /__heartbeat__` requires no auth; returns `{"status":"ok"}`
@@ -87,7 +89,13 @@ Copy it to `config.json` and fill in real values.
     "username": "admin",
     "password": "changeme"
   },
-  "database_url": "postgres://user:pass@localhost:5432/monitor",
+  "database_config": {
+    "user": "postgres",
+    "password": "pass",
+    "host": "localhost",
+    "port": 5432,
+    "database": "monitor"
+  },
   "server": {
     "host": "0.0.0.0",
     "port": 8080, 
@@ -121,19 +129,29 @@ Copy it to `config.json` and fill in real values.
       "use_tls": true,
       "recent_lookback": "1d"
     }
-  ]
+  ],
+  "currency": {
+    "enabled": true,
+    "crypto_pairs": ["BTC-USD", "ETH-USD"],
+    "crypto_interval_minutes": 30,
+    "metals": ["XAU", "XAG"],
+    "metals_interval_minutes": 60,
+    "nbrb_currencies": ["USD", "EUR", "RUB"],
+    "nbrb_daily_at_utc": "07:00"
+  }
 }
 ```
 
 | Field | Description |
 |---|---|
 | `auth` | Credentials for HTTP Basic Auth on all protected endpoints |
-| `database_url` | PostgreSQL connection string |
+| `database_config` | PostgreSQL connection settings (`user`, `password`, `host`, `port`, `database`) |
 | `server.host` | Bind address (`0.0.0.0` for all interfaces) |
 | `server.port` | HTTP listen port (default `8080`) |
 | `server.enable_docs` | Enable OpenAPI docs at `/docs` (default `true`) |
 | `healthchecks` | Array of healthcheck definitions |
 | `emails` | Array of IMAP account definitions (empty array disables email monitoring) |
+| `currency` | Optional currency rate settings — omit it to use the defaults (see below) |
 
 ### Healthcheck fields
 | Field | Type | Description |
@@ -143,6 +161,30 @@ Copy it to `config.json` and fill in real values.
 | `address` | string | URL (http) or folder path (file) |
 | `period_seconds` | int | Polling interval |
 | `failure_threshold` | int | Consecutive failures before marking unhealthy |
+
+### Currency fields
+
+The whole `currency` section and each field in it are optional; configs from v1.1 work unchanged.
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | `false` disables fetching; `/currency` endpoints return 404 |
+| `crypto_pairs` | `["BTC-USD","ETH-USD"]` | [Coinbase spot price](https://docs.cdp.coinbase.com/coinbase-app/track-apis/prices); CoinGecko as fallback |
+| `crypto_interval_minutes` | `30` | Minutes between crypto updates |
+| `metals` | `["XAU","XAG"]` | [gold-api.com](https://gold-api.com/docs), USD per troy ounce (`XPT`, `XPD` also work) |
+| `metals_interval_minutes` | `60` | Minutes between metal updates |
+| `nbrb_currencies` | `["USD","EUR","RUB"]` | Official rate in BYN from the [NBRB API](https://www.nbrb.by/apihelp/exrates) |
+| `nbrb_daily_at_utc` | `"07:00"` | Daily NBRB update time, UTC `HH:MM` |
+
+Requests to `/currency` are always answered from memory — they never trigger a call to the external APIs.
+Every successful fetch is also stored in the `currency_rates` table (one row per pair). On startup the stored
+values are restored, so the device gets the last known rates immediately, and a group whose stored values are
+still fresh waits for its next regular run instead of fetching again (crypto/metals: one interval after the
+stored fetch; NBRB: the next 07:00 UTC unless today's slot was missed).
+
+A failed fetch keeps the previous value and retries after 5 minutes (crypto, metals) or 15 minutes (NBRB, never
+skipping the daily slot). A value is reported as stale when it is missing or older than two update intervals
+plus 5 minutes (NBRB: 25 hours).
 
 ---
 
@@ -157,6 +199,8 @@ All endpoints (except `/__heartbeat__`) require `Authorization: Basic <base64(us
 | `GET` | `/emails` | New (unacknowledged) emails from all accounts |
 | `POST` | `/emails/acknowledge` | Mark specific emails as received `{"ids":[1,2]}` |
 | `POST` | `/emails/acknowledge-all` | Mark all new emails as received |
+| `GET` | `/currency` | Rates as plain text, 21 characters per line (device display) |
+| `GET` | `/currency/json` | Rates with value, scale, source, timestamps and `stale` flag |
 | `GET` | `/docs` | Swagger UI — interactive OpenAPI documentation |
 
 ### Example: check healthchecks
@@ -171,6 +215,22 @@ curl -u admin:changeme -X POST http://localhost:8080/emails/acknowledge \
   -d '{"ids": [1, 2, 3]}'
 ```
 
+### Example: currency rates
+```bash
+curl -u admin:changeme http://localhost:8080/currency
+```
+```text
+BTC-USD     83 387.40
+ETH-USD      2 553.18
+Gold-USD     4 173.90
+Silver-USD      60.77
+USD-BYN        3.0392
+EUR-BYN        3.4097
+100RUB-BYN     3.5899
+```
+Each line is a label (10 columns), a marker column (`*` = stale) and the value (10 columns); missing values show as `n/a`.
+NBRB quotes some currencies per 10/100/1000 units — the label carries the multiplier (`100RUB-BYN`).
+
 ---
 
 ## Database migrations
@@ -181,6 +241,8 @@ Migrations live in the `migrations/` directory as numbered SQL files:
 migrations/
   0001_create_emails.up.sql
   0001_create_emails.down.sql
+  0002_create_currency_rates.up.sql     (v1.2)
+  0002_create_currency_rates.down.sql
 ```
 
 SQLx tracks applied migrations in the `_sqlx_migrations` table. On startup:
@@ -188,7 +250,19 @@ SQLx tracks applied migrations in the `_sqlx_migrations` table. On startup:
 - Pending migrations are applied in order
 - A gap or out-of-order migration raises a fatal error
 
-To add a new migration, create `migrations/0002_<name>.up.sql` and `.down.sql`.
+To add a new migration, create `migrations/0003_<name>.up.sql` and `.down.sql`.
+
+### Rolling back to v1.1
+
+A v1.1 binary refuses to start on a database that already has migration 0002 (SQLx reports an applied
+migration it does not know). To roll back, revert 0002 first:
+
+```sql
+DROP TABLE IF EXISTS currency_rates;
+DELETE FROM _sqlx_migrations WHERE version = 2;
+```
+
+(or `sqlx migrate revert` with sqlx-cli). Upgrading again re-applies it automatically.
 
 ---
 
@@ -234,7 +308,7 @@ Power the display and the encoder from **3V3, not 5V**: their on-board pull-up r
 | Button short press on other screens | Nothing |
 | Button hold 5 s | Acknowledge all emails (bar fills the top pixel row) |
 
-Screens: one per new email (newest first) → healthchecks (4 per page) → currency rates.
+Screens: one per new email (newest first) → healthchecks (4 per page) → currency rates from `GET /currency` (4 per page; needs backend v1.2, older backends show a placeholder).
 The display blanks after 5 minutes of inactivity (`DISPLAY_TIMEOUT_MS`, `0` = never); the first input only wakes it, and a new email wakes it too.
 
 ### LED behaviour
