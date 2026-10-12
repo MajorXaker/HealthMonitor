@@ -288,7 +288,7 @@ Power the display and the encoder from **3V3, not 5V**: their on-board pull-up r
 | Button short press on other screens | Nothing |
 | Button hold 5 s | Acknowledge all emails (bar fills the top pixel row) |
 
-Screens: one per new email (newest first) → healthchecks (4 per page) → currency rates.
+Screens: one per new email (newest first) → healthchecks (4 per page) → currency rates from `GET /currency` (4 per page; needs backend v1.2, older backends show a placeholder).
 The display blanks after 5 minutes of inactivity (`DISPLAY_TIMEOUT_MS`, `0` = never); the first input only wakes it, and a new email wakes it too.
 
 ### LED behaviour
