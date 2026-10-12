@@ -1,6 +1,6 @@
 # healthmon
 
-A two-part system for monitoring application health and email inboxes:
+A two-part system for monitoring application health, email inboxes and currency rates:
 
 - **Backend** (`/`) — a lightweight async Rust service that runs healthchecks, polls IMAP accounts, persists state to PostgreSQL, and exposes results over a secured REST API.
 - **Currency rates** — BTC/ETH, gold/silver and official NBRB rates (USD/EUR/RUB → BYN) from free, keyless APIs, exposed as plain text for the device and as JSON.
