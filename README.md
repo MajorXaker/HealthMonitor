@@ -3,7 +3,7 @@
 A two-part system for monitoring application health and email inboxes:
 
 - **Backend** (`/`) — a lightweight async Rust service that runs healthchecks, polls IMAP accounts, persists state to PostgreSQL, and exposes results over a secured REST API.
-- **Hardware device** (`/device`) — a USB-powered indicator based on the Seeed Studio XIAO ESP32-C6, with four LEDs and a button, that polls the backend over Wi-Fi and gives at-a-glance system status.
+- **Hardware device** (`/device`) — a USB-powered indicator based on the Seeed Studio XIAO ESP32-C6, with four LEDs, a 128x64 OLED display, a rotary encoder and a button, that polls the backend over Wi-Fi and gives at-a-glance system status.
 
 ---
 
@@ -18,7 +18,7 @@ healthmon/
 ├── README.md              This file
 └── device/
     ├── healthmon_device.ino   Arduino sketch for XIAO ESP32-C6
-    └── wiring_instructions.docx  Wiring diagram and setup guide
+    └── WIRING.md              Wiring diagram and setup guide
 ```
 
 ---
@@ -39,7 +39,10 @@ healthmon/
 ### Hardware device
 - **Wi-Fi connected** — polls the healthmon backend on a configurable interval
 - **4 LEDs** — reflect backend reachability, healthcheck status, email subsystem state, and new email presence
-- **1 button** — acknowledges all new emails with a single press
+- **128x64 OLED display** (SSD1306 / SH1106, U8g2) — one screen per new email, healthcheck pages, currency rates; UTF-8 with Cyrillic
+- **Rotary encoder** — rotate to switch screens (push switch reserved for future use)
+- **1 button** — short press on an email screen acknowledges that email; hold 5 s acknowledges all (progress bar on the top pixel row)
+- **Non-blocking networking** — HTTP runs in a separate FreeRTOS task, the UI never freezes
 - **PWM pulsing** — smooth sinusoidal pulse via ESP32 LEDC hardware; no blocking delays
 - **Startup self-test** — flashes all LEDs in sequence on every power-on to confirm wiring
 
@@ -192,13 +195,15 @@ To add a new migration, create `migrations/0002_<name>.up.sql` and `.down.sql`.
 ## Hardware device
 
 The `device/` folder contains the Arduino sketch for a physical status indicator.
-See `device/wiring_instructions.docx` for the full wiring diagram and setup guide.
+See [`device/WIRING.md`](device/WIRING.md) for the full wiring diagram and setup guide.
 
 ### Hardware required
 - Seeed Studio XIAO ESP32-C6
 - 4 LEDs: green/blue (×2), red (×1), yellow/amber (×1)
 - 4 × 220 Ω resistors
 - 1 momentary push button
+- 128x64 monochrome I2C OLED (SSD1306 or SH1106)
+- Rotary encoder module with CLK / DT / SW / + / GND pins (KY-040 style)
 - Breadboard, jumper wires, USB-C cable
 
 ### Pin assignments
@@ -210,8 +215,27 @@ See `device/wiring_instructions.docx` for the full wiring diagram and setup guid
 | D1       | LED: Healthcheck Issues — red |
 | D2       | LED: Email Subsystem Online — green/blue |
 | D3       | LED: New Emails — yellow/amber |
+| D4       | Display SDA |
+| D5       | Display SCL |
+| D7       | Encoder SW (wired, unused for now) |
+| D8       | Encoder CLK |
+| D9       | Encoder DT |
+| 3V3      | Display VCC, encoder `+` |
 
-Each LED connects through a 220 Ω resistor to GND. The button uses the internal pull-up — no external resistor needed.
+Each LED connects through a 220 Ω resistor to GND. The button and encoder use internal pull-ups — no external resistors needed.
+Power the display and the encoder from **3V3, not 5V**: their on-board pull-up resistors connect to that rail.
+
+### Display and controls
+
+| Control | Action |
+|---|---|
+| Encoder clockwise / counter-clockwise | Next / previous screen (wraps around) |
+| Button short press on an email screen | Acknowledge that email, show the next screen |
+| Button short press on other screens | Nothing |
+| Button hold 5 s | Acknowledge all emails (bar fills the top pixel row) |
+
+Screens: one per new email (newest first) → healthchecks (4 per page) → currency rates.
+The display blanks after 5 minutes of inactivity (`DISPLAY_TIMEOUT_MS`, `0` = never); the first input only wakes it, and a new email wakes it too.
 
 ### LED behaviour
 
@@ -235,7 +259,7 @@ Each LED connects through a 220 Ω resistor to GND. The button uses the internal
    ```
 3. Install **esp32 by Espressif Systems** ≥ 3.x via Boards Manager
 4. Select board: **XIAO_ESP32C6**
-5. Install **ArduinoJson** by Benoit Blanchon ≥ 7.x via Library Manager
+5. Install **ArduinoJson** by Benoit Blanchon ≥ 7.x and **U8g2** by oliver ≥ 2.34 via Library Manager
 6. Open `device/healthmon_device.ino`, edit the `Config` namespace:
    ```cpp
    WIFI_SSID      = "your_network"
