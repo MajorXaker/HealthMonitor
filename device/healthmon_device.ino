@@ -960,7 +960,7 @@ namespace Draw {
   }
 
   void textRight(uint8_t y, const char* s) {
-    u8g2.drawUTF8(128 - u8g2.getUTF8Width(s), y, s);
+    u8g2.drawUTF8(127 - u8g2.getUTF8Width(s), y, s);  // 1 px right margin
   }
 
   /** Title on the left, `right` aligned right, rule underneath. */
